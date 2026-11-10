@@ -40,8 +40,8 @@ Only the middleware container has the OpenAI key. Open WebUI's "OpenAI key" is `
 You need Docker with Compose v2 and `make`. Python 3.11 or newer is only needed to run the tests outside Docker.
 
 ```bash
-git clone <repository-url> flaxmor
-cd flaxmor
+git clone https://github.com/isarinio22/open-webui-prompt-middleware.git
+cd open-webui-prompt-middleware
 cp .env.example .env
 # Edit .env and set OPENAI_API_KEY.
 make up
