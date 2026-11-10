@@ -1,6 +1,6 @@
 import logging
 import time
-from asyncio import sleep
+from asyncio import CancelledError, sleep
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +16,9 @@ from app.schemas import ApiError, ErrorDetail, ErrorResponse
 log = logging.getLogger(__name__)
 
 PROBE_CACHE_SECONDS = 30.0
+# Shorter than Docker's 10-second healthcheck timeout, so a hanging OpenAI can't
+# make probes pile up.
+PROBE_TIMEOUT_SECONDS = 5.0
 BACKOFF_BASE_SECONDS = 0.5
 
 # no-cache stops caches from holding on to the stream. X-Accel-Buffering stops
@@ -63,7 +66,7 @@ class UpstreamProbe:
     async def _probe(self) -> ProbeResult:
         now = time.monotonic()
         try:
-            response = await self._client.get("/models")
+            response = await self._client.get("/models", timeout=PROBE_TIMEOUT_SECONDS)
         except httpx.HTTPError as exc:
             reason = f"upstream unreachable: {type(exc).__name__}"
         else:
@@ -154,6 +157,14 @@ async def relay_stream(response: httpx.Response, started: float) -> AsyncIterato
             },
         )
         yield stream_interrupted_event()
+    except (CancelledError, GeneratorExit):
+        # The client went away, for example because the user pressed stop. The
+        # finally block closes the connection to OpenAI, which stops generation.
+        log.info(
+            "request.client_disconnected",
+            extra={"chunks": chunks, "duration_ms": elapsed_ms(started)},
+        )
+        raise
     else:
         log.info(
             "upstream.completed",

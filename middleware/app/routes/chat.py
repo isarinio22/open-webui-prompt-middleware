@@ -23,6 +23,7 @@ async def chat_completions(request: Request) -> Response:
     settings: Settings = request.app.state.settings
     body = await read_chat_body(request)
     log.info("chat.request", extra=describe_chat(body, settings.log_message_content))
+    require_allowed_model(body["model"], settings.allowed_models)
     messages = messages_to_forward(
         body, request.app.state.system_prompt, settings.inject_on_internal_tasks
     )
@@ -48,6 +49,18 @@ async def read_chat_body(request: Request) -> dict[str, Any]:
             code="invalid_body",
         ) from exc
     return body
+
+
+def require_allowed_model(model: str, allowed_models: list[str]) -> None:
+    # Same status, type and code OpenAI uses for a model that doesn't exist, so
+    # Open WebUI shows its usual message.
+    if model not in allowed_models:
+        raise ApiError(
+            status_code=404,
+            message=f"The model '{model}' is not available through this middleware.",
+            error_type="invalid_request_error",
+            code="model_not_found",
+        )
 
 
 def describe_chat(body: dict[str, Any], include_content: bool) -> dict[str, Any]:

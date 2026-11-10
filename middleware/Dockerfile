@@ -1,9 +1,10 @@
 FROM python:3.12-slim
 
+# No .pyc files; output is sent straight away instead of held in a buffer, so
+# log lines appear at once; no pip update check.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
-#Makes Python send output straight away instead of holding it in a buffer.
 
 WORKDIR /app
 

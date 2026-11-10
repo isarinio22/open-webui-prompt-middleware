@@ -92,7 +92,8 @@ async def test_upstream_failure_logs_error_type_and_mapped_status(
 
     failed = next(line for line in log_lines() if line["event"] == "request.failed")
     assert failed["level"] == "ERROR"
-    assert failed["error_type"] == "upstream_unreachable"
+    assert failed["error_type"] == "upstream_error"
+    assert failed["error_code"] == "upstream_unreachable"
     assert failed["mapped_status"] == 502
 
 
@@ -166,3 +167,22 @@ async def test_mid_stream_failure_is_logged_at_error(
     assert event["level"] == "ERROR"
     assert event["error"] == "ReadError"
     assert event["chunks"] == 1
+
+
+async def test_unexpected_exception_is_logged_with_traceback(
+    client: httpx.AsyncClient, log_lines: LogLines, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def crash(*args: object) -> None:
+        raise RuntimeError("simulated bug")
+
+    monkeypatch.setattr("app.routes.chat.describe_chat", crash)
+
+    await client.post("/v1/chat/completions", json=CHAT_BODY, headers={"X-Request-ID": "crash-2"})
+
+    lines = [line for line in log_lines() if line["request_id"] == "crash-2"]
+    failed = next(line for line in lines if line["event"] == "request.failed")
+    assert failed["level"] == "ERROR"
+    assert failed["error_code"] == "internal_error"
+    assert "RuntimeError: simulated bug" in failed["exception"]
+    assert lines[-1]["event"] == "request.completed"
+    assert lines[-1]["status"] == 500

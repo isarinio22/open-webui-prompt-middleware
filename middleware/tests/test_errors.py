@@ -88,3 +88,43 @@ async def test_other_client_errors_pass_through(
 
     assert response.status_code == 400
     assert response.json() == openai_error
+
+
+async def test_unknown_path_uses_openai_error_shape(client: httpx.AsyncClient) -> None:
+    response = await client.post("/v1/embeddings", json={})
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {"message": "Not Found", "type": "invalid_request_error", "code": "not_found"}
+    }
+
+
+async def test_wrong_method_uses_openai_error_shape(client: httpx.AsyncClient) -> None:
+    response = await client.get("/v1/chat/completions")
+
+    assert response.status_code == 405
+    assert response.json()["error"]["code"] == "method_not_allowed"
+    assert response.headers["allow"] == "POST"
+
+
+async def test_unexpected_exception_becomes_openai_shaped_500(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def crash(*args: object) -> None:
+        raise RuntimeError("simulated bug")
+
+    monkeypatch.setattr("app.routes.chat.describe_chat", crash)
+
+    response = await client.post(
+        "/v1/chat/completions", json=CHAT_BODY, headers={"X-Request-ID": "crash-1"}
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "message": "The middleware failed unexpectedly.",
+            "type": "server_error",
+            "code": "internal_error",
+        }
+    }
+    assert response.headers["x-request-id"] == "crash-1"

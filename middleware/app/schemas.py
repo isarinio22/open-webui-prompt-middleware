@@ -1,9 +1,9 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 
-# match OpenAI's error format
+# OpenAI's error format, which Open WebUI knows how to display.
 class ErrorDetail(BaseModel):
     message: str
     type: str
@@ -23,7 +23,7 @@ class ApiError(Exception):
         self.detail = ErrorDetail(message=message, type=error_type, code=code)
 
 
-# match OpenAI's model list format
+# OpenAI's model list format, returned by GET /v1/models.
 class ModelObject(BaseModel):
     id: str
     object: Literal["model"] = "model"
@@ -39,4 +39,6 @@ class ModelList(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: list[dict[str, Any]]
-    stream: bool = False
+    # Strict, so a string such as "false" is rejected instead of being read as
+    # true. OpenAI also accepts null, meaning not streamed.
+    stream: StrictBool | None = None

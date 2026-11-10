@@ -46,6 +46,14 @@ def prompt_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Settings also reads environment variables. Remove any the developer's shell
+    # sets, such as MIDDLEWARE_API_KEY, so every test starts from the defaults.
+    for name in Settings.model_fields:
+        monkeypatch.delenv(name.upper(), raising=False)
+
+
+@pytest.fixture(autouse=True)
 def backoff_waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     # Retries wait between attempts. Every test records the waits instead of
     # sleeping, and a test that cares can ask for this list.

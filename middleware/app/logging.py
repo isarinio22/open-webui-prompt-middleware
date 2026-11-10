@@ -5,7 +5,7 @@ import time
 from contextvars import ContextVar
 from datetime import UTC, datetime
 
-# works like a global variable, each request sees its own value
+# Works like a global variable, but each request sees its own value.
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 # Every attribute a bare LogRecord carries. Anything else on a record was passed

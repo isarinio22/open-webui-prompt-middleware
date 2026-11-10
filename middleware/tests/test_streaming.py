@@ -1,10 +1,14 @@
+import asyncio
 import json
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import httpx
+import pytest
 import respx
 
+from app.upstream import relay_stream
 from tests.conftest import CHAT_BODY, TEST_PROMPT
 
 STREAM_BODY: dict[str, Any] = {**CHAT_BODY, "stream": True}
@@ -105,3 +109,28 @@ async def test_streamed_auth_error_maps_to_502(
 
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "upstream_auth_misconfigured"
+
+
+async def test_client_disconnect_closes_upstream_and_is_logged(
+    log_lines: Callable[[], list[dict[str, object]]],
+) -> None:
+    async def slow_stream() -> AsyncIterator[bytes]:
+        yield SSE_CHUNKS[0]
+        await asyncio.sleep(10)
+        yield SSE_CHUNKS[1]
+
+    upstream_response = httpx.Response(200, content=slow_stream())
+    stream = relay_stream(upstream_response, time.perf_counter())
+    await anext(stream)
+
+    # A disconnect cancels the task while it waits for the next chunk, which is
+    # what Starlette does when the client hangs up.
+    waiting = asyncio.create_task(anext(stream))
+    await asyncio.sleep(0)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+
+    assert upstream_response.is_closed
+    event = next(line for line in log_lines() if line["event"] == "request.client_disconnected")
+    assert event["chunks"] == 1

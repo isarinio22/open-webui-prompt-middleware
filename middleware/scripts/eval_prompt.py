@@ -7,7 +7,8 @@
 #   python scripts/eval_prompt.py [replies.json]
 #
 # The optional file receives every reply, for reading the failures. Export
-# MIDDLEWARE_API_KEY first if it is set in .env.
+# MIDDLEWARE_API_KEY first if it is set in .env. EVAL_MODEL picks another model,
+# for example EVAL_MODEL=gpt-4o.
 
 import asyncio
 import json
@@ -23,7 +24,7 @@ import httpx
 
 MIDDLEWARE_URL = os.environ.get("MIDDLEWARE_URL", "http://localhost:8000/v1")
 MIDDLEWARE_API_KEY = os.environ.get("MIDDLEWARE_API_KEY", "")
-MODEL = "gpt-4o-mini"
+MODEL = os.environ.get("EVAL_MODEL", "gpt-4o-mini")
 RUNS = 5
 CONCURRENCY = 6
 
@@ -38,6 +39,14 @@ TOP_LEVEL_KEYS = [
     "uncertain_fields",
     "notes",
 ]
+# The checks below call string and dict methods on these values.
+TOP_LEVEL_TYPES = {
+    "document_type": str,
+    "language": str,
+    "extracted_data": dict,
+    "uncertain_fields": list,
+    "notes": str,
+}
 UNCERTAIN_FIELD_KEYS = {"field", "value", "confidence", "reason"}
 
 RECEIPT = """WHOLE FOODS MKT #10234 - AUSTIN TX
@@ -134,6 +143,9 @@ def check_extraction_layout(reply: str) -> list[str]:
         return ["json block does not parse"]
     if list(data) != TOP_LEVEL_KEYS:
         return [f"top-level keys are {list(data)}"]
+    wrong_types = [key for key, kind in TOP_LEVEL_TYPES.items() if not isinstance(data[key], kind)]
+    if wrong_types:
+        return [f"wrong value type for {', '.join(wrong_types)}"]
 
     problems = []
     confidence = data["confidence_in_type"]
@@ -145,14 +157,16 @@ def check_extraction_layout(reply: str) -> list[str]:
         if label != expected_label:
             problems.append(f"type line says {label!r}, expected {expected_label!r}")
     for entry in data["uncertain_fields"]:
-        if set(entry) != UNCERTAIN_FIELD_KEYS:
-            problems.append(f"uncertain_fields entry has keys {sorted(entry)}")
+        if not isinstance(entry, dict) or set(entry) != UNCERTAIN_FIELD_KEYS:
+            problems.append(f"uncertain_fields entry is {entry!r}")
         elif not entry["confidence"] < 0.9:
             problems.append(f"uncertain_fields entry has confidence {entry['confidence']}")
     return problems
 
 
 def check_follow_up_layout(reply: str) -> list[str]:
+    if not reply.strip():
+        return ["empty reply"]
     problems = []
     if "```json" in reply:
         problems.append("follow-up answer contains a json block")
@@ -292,7 +306,8 @@ CASES = [
 async def complete(client: httpx.AsyncClient, messages: list[dict[str, str]]) -> str:
     response = await client.post("/chat/completions", json={"model": MODEL, "messages": messages})
     response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    # OpenAI returns null content for some refusals; treat it as an empty reply.
+    return response.json()["choices"][0]["message"]["content"] or ""
 
 
 async def run_case(client: httpx.AsyncClient, case: Case) -> tuple[str, list[str]]:
@@ -322,30 +337,33 @@ async def run_all_cases() -> list[dict[str, Any]]:
     async with httpx.AsyncClient(base_url=MIDDLEWARE_URL, headers=headers, timeout=120) as client:
 
         async def run_once(case: Case, run: int) -> dict[str, Any]:
-            async with semaphore:
-                reply, problems = await run_case(client, case)
+            # One failed request counts against its own run instead of discarding
+            # every reply the other runs already paid for.
+            try:
+                async with semaphore:
+                    reply, problems = await run_case(client, case)
+            except httpx.HTTPError as exc:
+                reply, problems = "", [f"request failed: {type(exc).__name__}"]
             return {"case": case.name, "run": run, "reply": reply, "problems": problems}
 
         return await asyncio.gather(*(run_once(case, run) for case in CASES for run in range(RUNS)))
 
 
-def print_summary(results: list[dict[str, Any]]) -> int:
+def print_summary(results: list[dict[str, Any]]) -> None:
     for case in CASES:
         runs = [result for result in results if result["case"] == case.name]
         passed = sum(1 for result in runs if not result["problems"])
         problems = sorted({problem for result in runs for problem in result["problems"]})
         print(f"{case.name:28} {passed}/{len(runs)}  {'; '.join(problems)}")
     total_passed = sum(1 for result in results if not result["problems"])
-    print(f"{'total':28} {total_passed}/{len(results)}")
-    return total_passed
+    print(f"{'total':28} {total_passed}/{len(results)}  ({MODEL})")
 
 
 def main() -> None:
     results = asyncio.run(run_all_cases())
     if len(sys.argv) > 1:
         Path(sys.argv[1]).write_text(json.dumps(results, indent=1, ensure_ascii=False))
-    total_passed = print_summary(results)
-    sys.exit(0 if total_passed == len(results) else 1)
+    print_summary(results)
 
 
 if __name__ == "__main__":

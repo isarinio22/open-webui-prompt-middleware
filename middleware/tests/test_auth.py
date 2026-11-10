@@ -45,7 +45,12 @@ async def test_chat_route_requires_key(
     assert not route.called
 
 
-async def test_health_endpoints_need_no_key(client: httpx.AsyncClient) -> None:
-    response = await client.get("/health")
+@pytest.mark.parametrize("path", ["/health", "/ready"])
+async def test_health_endpoints_need_no_key(
+    client: httpx.AsyncClient, upstream: respx.MockRouter, path: str
+) -> None:
+    upstream.get("/models").respond(200, json={"object": "list", "data": []})
+
+    response = await client.get(path)
 
     assert response.status_code == 200

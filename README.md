@@ -37,7 +37,7 @@ Only the middleware container has the OpenAI key. Open WebUI's "OpenAI key" is `
 
 ## Quickstart
 
-You need Docker with Compose v2 and `make`. Python 3.11 or newer is only needed to run the tests outside Docker.
+You need Docker with Compose v2 and `make`. Python 3.11 or newer is only needed on the host, to run the tests and the prompt evaluation.
 
 ```bash
 git clone https://github.com/isarinio22/open-webui-prompt-middleware.git
@@ -109,7 +109,7 @@ All settings come from `.env`. [.env.example](.env.example) lists every variable
 |---|---|---|
 | `OPENAI_API_KEY` | required | The real OpenAI key. Only the middleware sees it. |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Where requests are forwarded. Can point at a mock or another OpenAI-compatible server. |
-| `ALLOWED_MODELS` | `gpt-4o-mini,gpt-4o` | Comma-separated list that `/v1/models` advertises. |
+| `ALLOWED_MODELS` | `gpt-4o-mini,gpt-4o` | Comma-separated list that `/v1/models` advertises and `/v1/chat/completions` accepts. Other models get 404 `model_not_found`. |
 | `SYSTEM_PROMPT_PATH` | `/app/SYSTEM_PROMPT.md` | Prompt file inside the container. The Dockerfile copies the repository's file there. |
 | `MIDDLEWARE_API_KEY` | unset | If set, every `/v1` request must send it as a bearer token. Compose passes it to Open WebUI as its OpenAI key. |
 | `INJECT_ON_INTERNAL_TASKS` | `false` | Also add the system prompt to Open WebUI's title and tag requests. |
@@ -137,7 +137,7 @@ Open WebUI saves its OpenAI connection settings in the database on first start a
 - **Retry only before the first byte.** Connection errors, timeouts and 5xx responses are retried with backoff of 0.5 and then 1 second. Once part of a streamed answer has reached the user, a retry would show a second, different answer after the first half, so a failure at that point ends the stream with an error event instead. 4xx and 429 are not retried, because sending the same request again gets the same answer or makes a rate limit worse.
 - **OpenAI's 401 and 403 become a generic 502.** These mean the middleware's key is wrong, not the user's. Passing them through would tell Open WebUI that its own key was rejected, and OpenAI's 401 message quotes part of the key.
 - **Readiness checks OpenAI, and caches the answer for 30 seconds.** `/ready` calls OpenAI's model list, which fails fast with a bad key or no network. I rejected a readiness check that only looks at local state, because a bad key would then show up at the first chat. Caching stops Docker's healthcheck from calling OpenAI every 10 seconds.
-- **A fixed `/v1/models` list.** I rejected proxying OpenAI's own list, which contains dozens of embedding, audio and image models that Open WebUI would show in the chat model picker.
+- **A fixed model list, enforced.** `/v1/models` advertises `ALLOWED_MODELS`, and the chat endpoint rejects any other model, so nobody calling the middleware directly can spend the shared key on a model you didn't choose. I rejected proxying OpenAI's own list, which contains dozens of embedding, audio and image models that Open WebUI would show in the chat model picker.
 - **Prompt changes are measured, not judged by eye.** `make eval` checks 90 replies by code for every version. I rejected judging a change by reading a few answers, because answers vary between runs: the same v4 prompt scored 76 and then 77, and single cases moved between 2 and 3 out of 5. Two of my five prompt versions scored worse than the one before, which reading a handful of replies would not have shown.
 - **Exact versions in a constraints file.** `pyproject.toml` states the version ranges the code supports, and their lower bounds are tested. `middleware/constraints.txt` pins every installed package to an exact version, and the Docker image, CI and `make install` all install with it, so a new release of a dependency can't change a build without a commit. I rejected a lock tool such as Poetry or uv, which adds a tool to learn for one file, and exact pins in `pyproject.toml`, which would hide the real supported ranges.
 - **Standard library logging with a small JSON formatter.** I rejected structlog. It is a dependency that would produce the same JSON lines. A context variable carries the request ID into every log line without passing it through function arguments.
@@ -146,23 +146,27 @@ Open WebUI saves its OpenAI connection settings in the database on first start a
 
 ## Failure handling
 
-Every error the middleware creates uses OpenAI's error shape, `{"error": {"message", "type", "code"}}`, which Open WebUI displays to the user.
+Every error response uses OpenAI's error shape, `{"error": {"message", "type", "code"}}`, which Open WebUI displays to the user. That includes unknown paths, wrong methods and unexpected crashes.
 
 | Situation | Client receives | Logged as |
 |---|---|---|
 | Invalid JSON, or no `model` or `messages` | 400, `invalid_body` | `request.failed`, WARNING |
 | Wrong or missing `MIDDLEWARE_API_KEY`, if one is set | 401, `invalid_api_key` | `request.failed`, WARNING |
+| A model that is not in `ALLOWED_MODELS` | 404, `model_not_found` | `request.failed`, WARNING |
+| An unknown path or a wrong method | 404 `not_found` or 405 `method_not_allowed` | `request.failed`, WARNING |
 | Can't connect to OpenAI, after retries | 502, `upstream_unreachable` | `upstream.failed` per attempt, then `request.failed`, ERROR |
 | OpenAI too slow, after retries | 504, `upstream_timeout` | `upstream.failed` per attempt, then `request.failed`, ERROR |
 | OpenAI returns 401 or 403 | 502, `upstream_auth_misconfigured`, OpenAI's message hidden | `request.failed`, ERROR |
 | OpenAI returns 429 | 429 with OpenAI's body and `Retry-After` | `upstream.completed` with the status |
 | OpenAI returns another 4xx, such as a context length error | Same status and body | `upstream.completed` with the status |
-| OpenAI returns 5xx, after retries | 502, `upstream_server_error` | `upstream.failed` per attempt, then `request.failed`, ERROR |
+| OpenAI returns 5xx, after retries | 502, `upstream_server_error` | `upstream.failed` per retried attempt, `upstream.completed` with the last status, then `request.failed`, ERROR |
 | The stream breaks after it has started | The status is already 200, so the stream ends with `data: {"error": ...}` and `data: [DONE]` | `upstream.stream_interrupted`, ERROR |
+| The client disconnects mid-stream, for example when the user presses stop | Nothing more is sent, and the connection to OpenAI is closed, which stops generation | `request.client_disconnected` |
+| A bug raises an unexpected exception | 500, `internal_error`, or a cut-off stream if the response had already started | `request.failed` with the traceback, ERROR |
 
 ## Example logs
 
-One JSON object per line on stdout. Every line carries the `request_id`, which comes from the incoming `X-Request-ID` header or is generated, and is echoed back in the response. These lines are from a real run.
+One JSON object per line on stdout. Lines written during a request carry its `request_id`, which comes from the incoming `X-Request-ID` header or is generated, and is echoed back in the response. Server startup and shutdown lines have `"request_id": null`. These lines are from real runs.
 
 A streamed chat message from Open WebUI:
 
@@ -186,9 +190,9 @@ Open WebUI's title request for the same chat, which skips the prompt:
 A middleware started with a wrong OpenAI key. The key does not appear anywhere in the logs:
 
 ```json
-{"ts": "2026-11-10T15:07:57.124+00:00", "level": "INFO", "event": "upstream.completed", "request_id": "demo-bad-key", "status": 401, "duration_ms": 510, "openai_request_id": "req_ea5b395decef41d0940586687b121b60"}
-{"ts": "2026-11-10T15:07:57.125+00:00", "level": "ERROR", "event": "request.failed", "request_id": "demo-bad-key", "error_type": "upstream_auth_misconfigured", "mapped_status": 502}
-{"ts": "2026-11-10T15:07:57.125+00:00", "level": "INFO", "event": "request.completed", "request_id": "demo-bad-key", "status": 502, "duration_ms": 513}
+{"ts": "2026-11-10T16:05:43.589+00:00", "level": "INFO", "event": "upstream.completed", "request_id": "demo-bad-key", "status": 401, "duration_ms": 370, "openai_request_id": "req_b14e7e8a98824929b4d290708f77672a"}
+{"ts": "2026-11-10T16:05:43.593+00:00", "level": "ERROR", "event": "request.failed", "request_id": "demo-bad-key", "error_type": "upstream_error", "error_code": "upstream_auth_misconfigured", "mapped_status": 502}
+{"ts": "2026-11-10T16:05:43.595+00:00", "level": "INFO", "event": "request.completed", "request_id": "demo-bad-key", "status": 502, "duration_ms": 376}
 ```
 
 `openai_request_id` is OpenAI's own ID for the call, which OpenAI support asks for.
@@ -203,7 +207,7 @@ make test      # pytest
 make lint      # ruff check and ruff format --check
 ```
 
-The tests call the app in memory through httpx's ASGI transport and mock OpenAI with respx, so they need no network and no key. They cover prompt loading and injection, Open WebUI task detection using request bodies recorded from Open WebUI 0.6.5, forwarding, streaming, mid-stream failures, retries, every row of the error table, authentication, and the log output, including a check that the key never appears in it.
+The tests call the app in memory through httpx's ASGI transport and mock OpenAI with respx, so they need no network and no key, and they ignore any settings exported in your shell. They cover prompt loading and injection, Open WebUI task detection using request bodies recorded from Open WebUI 0.6.5, forwarding, streaming, mid-stream failures, client disconnects, retries, every row of the failure table, authentication, and the log output, including a check that the key never appears in it.
 
 On every push to `main` and every pull request, GitHub Actions lints the code once, runs the tests on Python 3.11 and 3.12, and builds the Docker image. See [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
@@ -213,19 +217,18 @@ The unit tests can't tell whether GPT follows the prompt, so a separate script m
 make eval   # about a minute, a few cents
 ```
 
-It sends 18 inputs through the middleware to gpt-4o-mini, five times each, because answers vary between runs. The inputs are the cases from the prompt's design: documents of several kinds, planted instructions, a format request, two documents in one paste, non-English text, empty input, and follow-up questions. Each reply is checked by code against the prompt's rules, and the script prints the pass count per case. To keep every reply for reading, run `python scripts/eval_prompt.py replies.json` from `middleware/`. If `MIDDLEWARE_API_KEY` is set, export it first.
+It sends 18 inputs through the middleware to gpt-4o-mini, five times each, because answers vary between runs. The inputs are the cases from the prompt's design: documents of several kinds, planted instructions, a format request, two documents in one paste, non-English text, empty input, and follow-up questions. Each reply is checked by code against the prompt's rules, and the script prints the pass count per case. It reports scores rather than failing, because a score below 90 is information, not a broken run. To keep every reply for reading, run `python scripts/eval_prompt.py replies.json` from `middleware/`. `EVAL_MODEL=gpt-4o make eval` evaluates another model. If `MIDDLEWARE_API_KEY` is set, export it first.
 
 ## Known limitations and next steps
 
 - **Task detection depends on Open WebUI's prompt text.** An admin can edit the title and tag templates in Open WebUI. A custom template that doesn't start with `### Task:` would get the extraction prompt, and titles would come out as JSON. A user who turns off streaming and starts a message with `### Task:` would get no extraction prompt.
 - **A retried non-streamed request can be billed twice.** If OpenAI times out while generating, the retry generates the answer again.
-- **Stopping a response mid-stream is untested.** When a user presses stop, the stream should end and the connection to OpenAI should close. No test covers that path yet.
-- **Unexpected exceptions return a plain 500.** Errors the middleware anticipates use OpenAI's error shape. A bug would produce Starlette's default plain-text 500 instead.
+- **Readiness needs a key that may list models.** The readiness probe calls OpenAI's model list. An OpenAI project key restricted to chat gets 403 there, so the middleware never reports ready and Open WebUI doesn't start, even though chat would work.
 - **One shared key, no per-user limits.** Every Open WebUI user spends from the same OpenAI key, and the middleware has no rate limiting of its own.
-- **The prompt is at v4 and two behaviours are still weak.** `make eval` passes 76 and 77 of 90 replies with gpt-4o-mini, up from 70 for v1. The model almost never flags values it calculated itself, such as an invoice total, and flags an ambiguous receipt date in only 2 or 3 of 5 runs. [SYSTEM_PROMPT.md](SYSTEM_PROMPT.md) logs each version, what changed and what it scored.
+- **The prompt is at v4 and two behaviours are still weak.** `make eval` passes 76 and 77 of 90 replies with gpt-4o-mini, up from 70 for v1. The model almost never flags values it calculated itself, such as an invoice total, and flags an ambiguous receipt date in only 2 or 3 of 5 runs. gpt-4o handles those two better but breaks the strict format more often, scoring 74. [SYSTEM_PROMPT.md](SYSTEM_PROMPT.md) logs each version, what changed and what it scored.
 
 What I would do next:
 
-1. Run `make eval` on a schedule, since prompt behaviour can change when OpenAI updates a model.
-2. Return OpenAI-shaped errors for unexpected exceptions too, and log them as `request.failed`.
-3. Export request counts, latency and error rates as metrics instead of reading them from logs.
+1. Run `make eval` on a schedule and compare its score with the iteration log, since prompt behaviour can change when OpenAI updates a model.
+2. Export request counts, latency and error rates as metrics instead of reading them from logs.
+3. Pin the GitHub Actions in CI to commit hashes instead of version tags, so a changed or compromised action can't run unreviewed code.

@@ -99,3 +99,33 @@ async def test_rejects_malformed_body(client: httpx.AsyncClient, content: bytes)
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_body"
+
+
+async def test_rejects_a_model_that_is_not_allowed(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post("/chat/completions").respond(200, json=COMPLETION)
+
+    response = await client.post("/v1/chat/completions", json={**CHAT_BODY, "model": "o1-pro"})
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "model_not_found"
+    assert not route.called
+
+
+async def test_rejects_stream_given_as_a_string(client: httpx.AsyncClient) -> None:
+    response = await client.post("/v1/chat/completions", json={**CHAT_BODY, "stream": "false"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_body"
+
+
+async def test_accepts_stream_null_as_not_streamed(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    upstream.post("/chat/completions").respond(200, json=COMPLETION)
+
+    response = await client.post("/v1/chat/completions", json={**CHAT_BODY, "stream": None})
+
+    assert response.status_code == 200
+    assert response.json() == COMPLETION
