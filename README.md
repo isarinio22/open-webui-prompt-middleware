@@ -205,6 +205,14 @@ The tests call the app in memory through httpx's ASGI transport and mock OpenAI 
 
 GitHub Actions runs the same lint and tests on every push, on Python 3.11 and 3.12. See [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
+The unit tests can't tell whether GPT follows the prompt, so a separate script measures that against the real model. With the stack running:
+
+```bash
+make eval   # about a minute, a few cents
+```
+
+It sends 18 inputs through the middleware to gpt-4o-mini, five times each, because answers vary between runs. The inputs are the cases from the prompt's design: documents of several kinds, planted instructions, a format request, two documents in one paste, non-English text, empty input, and follow-up questions. Each reply is checked by code against the prompt's rules, and the script prints the pass count per case. To keep every reply for reading, run `python scripts/eval_prompt.py replies.json` from `middleware/`. If `MIDDLEWARE_API_KEY` is set, export it first.
+
 ## Known limitations and next steps
 
 - **Task detection depends on Open WebUI's prompt text.** An admin can edit the title and tag templates in Open WebUI. A custom template that doesn't start with `### Task:` would get the extraction prompt, and titles would come out as JSON. A user who turns off streaming and starts a message with `### Task:` would get no extraction prompt.
@@ -216,7 +224,7 @@ GitHub Actions runs the same lint and tests on every push, on Python 3.11 and 3.
 
 What I would do next:
 
-1. Add the prompt evaluation script I used to the repository and run it on a schedule, since prompt behaviour can change when the model changes.
+1. Run `make eval` on a schedule, since prompt behaviour can change when OpenAI updates a model.
 2. Pin exact dependency versions with a lock file. `pyproject.toml` uses ranges, so two builds a month apart can differ.
 3. Return OpenAI-shaped errors for unexpected exceptions too, and log them as `request.failed`.
 4. Export request counts, latency and error rates as metrics instead of reading them from logs.

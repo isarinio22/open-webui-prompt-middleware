@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint install
+.PHONY: up down logs test lint install eval
 
 up:
 	docker compose up --build -d
@@ -17,3 +17,6 @@ test:
 
 lint:
 	cd middleware && ruff check . && ruff format --check .
+
+eval:
+	cd middleware && python scripts/eval_prompt.py
