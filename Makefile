@@ -10,7 +10,7 @@ logs:
 	docker compose logs -f middleware
 
 install:
-	cd middleware && pip install -e '.[dev]'
+	cd middleware && pip install -c constraints.txt -e '.[dev]'
 
 test:
 	cd middleware && python -m pytest

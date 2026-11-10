@@ -1,5 +1,6 @@
 *
 !middleware/pyproject.toml
+!middleware/constraints.txt
 !middleware/app
 !SYSTEM_PROMPT.md
 **/__pycache__

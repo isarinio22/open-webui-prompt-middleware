@@ -1,13 +1,37 @@
 name: ci
 
-on: push
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
-  lint-and-test:
+  lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: middleware
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: middleware/constraints.txt
+      - run: pip install -c constraints.txt -e '.[dev]'
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     strategy:
       matrix:
-        # The oldest version pyproject.toml allows, and the version the image runs.
+        # The oldest Python that pyproject.toml allows, and the one the image runs.
         python-version: ["3.11", "3.12"]
     defaults:
       run:
@@ -17,7 +41,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e '.[dev]'
-      - run: ruff check .
-      - run: ruff format --check .
+          cache: pip
+          cache-dependency-path: middleware/constraints.txt
+      - run: pip install -c constraints.txt -e '.[dev]'
       - run: pytest
+
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # The same build docker compose runs, so a broken Dockerfile fails here first.
+      - run: docker build -f middleware/Dockerfile .

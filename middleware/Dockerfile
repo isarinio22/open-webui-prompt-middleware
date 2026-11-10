@@ -9,9 +9,10 @@ WORKDIR /app
 
 # The build context is the repo root (see docker-compose.yml) so that
 # SYSTEM_PROMPT.md, which lives next to the README, can be baked into the image.
-COPY middleware/pyproject.toml ./
+COPY middleware/pyproject.toml middleware/constraints.txt ./
 COPY middleware/app ./app
-RUN pip install --no-cache-dir .
+# -c pins every package to the version in constraints.txt.
+RUN pip install --no-cache-dir -c constraints.txt .
 
 COPY SYSTEM_PROMPT.md ./
 

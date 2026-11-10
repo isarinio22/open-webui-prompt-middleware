@@ -139,6 +139,7 @@ Open WebUI saves its OpenAI connection settings in the database on first start a
 - **Readiness checks OpenAI, and caches the answer for 30 seconds.** `/ready` calls OpenAI's model list, which fails fast with a bad key or no network. I rejected a readiness check that only looks at local state, because a bad key would then show up at the first chat. Caching stops Docker's healthcheck from calling OpenAI every 10 seconds.
 - **A fixed `/v1/models` list.** I rejected proxying OpenAI's own list, which contains dozens of embedding, audio and image models that Open WebUI would show in the chat model picker.
 - **Prompt changes are measured, not judged by eye.** `make eval` checks 90 replies by code for every version. I rejected judging a change by reading a few answers, because answers vary between runs: the same v4 prompt scored 76 and then 77, and single cases moved between 2 and 3 out of 5. Two of my five prompt versions scored worse than the one before, which reading a handful of replies would not have shown.
+- **Exact versions in a constraints file.** `pyproject.toml` states the version ranges the code supports, and their lower bounds are tested. `middleware/constraints.txt` pins every installed package to an exact version, and the Docker image, CI and `make install` all install with it, so a new release of a dependency can't change a build without a commit. I rejected a lock tool such as Poetry or uv, which adds a tool to learn for one file, and exact pins in `pyproject.toml`, which would hide the real supported ranges.
 - **Standard library logging with a small JSON formatter.** I rejected structlog. It is a dependency that would produce the same JSON lines. A context variable carries the request ID into every log line without passing it through function arguments.
 - **Request lifecycle logging as a plain ASGI middleware.** I first used FastAPI's `@app.middleware("http")`. A test showed it returns as soon as the response headers exist, so for a stream it logged `request.completed` before the answer had finished. The ASGI version sees the last chunk go out.
 - **The middleware port is bound to localhost.** Compose publishes it on `127.0.0.1:8000` for the curl checks. Open WebUI reaches it over the compose network. Publishing it on all interfaces would let anyone on the local network use the OpenAI key when `MIDDLEWARE_API_KEY` is unset.
@@ -204,7 +205,7 @@ make lint      # ruff check and ruff format --check
 
 The tests call the app in memory through httpx's ASGI transport and mock OpenAI with respx, so they need no network and no key. They cover prompt loading and injection, Open WebUI task detection using request bodies recorded from Open WebUI 0.6.5, forwarding, streaming, mid-stream failures, retries, every row of the error table, authentication, and the log output, including a check that the key never appears in it.
 
-GitHub Actions runs the same lint and tests on every push, on Python 3.11 and 3.12. See [.github/workflows/ci.yml](.github/workflows/ci.yml).
+On every push to `main` and every pull request, GitHub Actions lints the code once, runs the tests on Python 3.11 and 3.12, and builds the Docker image. See [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 The unit tests can't tell whether GPT follows the prompt, so a separate script measures that against the real model. With the stack running:
 
@@ -226,7 +227,5 @@ It sends 18 inputs through the middleware to gpt-4o-mini, five times each, becau
 What I would do next:
 
 1. Run `make eval` on a schedule, since prompt behaviour can change when OpenAI updates a model.
-2. Pin exact dependency versions with a lock file. `pyproject.toml` uses ranges, so two builds a month apart can differ.
-3. Return OpenAI-shaped errors for unexpected exceptions too, and log them as `request.failed`.
-4. Export request counts, latency and error rates as metrics instead of reading them from logs.
-5. Build the Docker image in CI, so a broken Dockerfile fails before anyone runs `make up`.
+2. Return OpenAI-shaped errors for unexpected exceptions too, and log them as `request.failed`.
+3. Export request counts, latency and error rates as metrics instead of reading them from logs.
