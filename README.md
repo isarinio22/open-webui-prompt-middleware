@@ -7,7 +7,7 @@ This repository starts three services with one command: Open WebUI 0.6.5, a Post
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TD
     browser[Browser] -->|localhost:3000| owui[Open WebUI 0.6.5]
     owui -->|SQL| db[(Postgres 16)]
     owui -->|OpenAI API at middleware:8000/v1| mw[Middleware, FastAPI]
@@ -33,6 +33,7 @@ Only the middleware container has the OpenAI key. Open WebUI's "OpenAI key" is `
 | `middleware/app/upstream.py` | HTTP client, forwarding, retries, streaming relay, error mapping, readiness probe |
 | `middleware/app/logging.py` | JSON log formatter and the per-request ID |
 | `middleware/app/auth.py` | Optional bearer token check |
+| `middleware/app/schemas.py` | Shapes of the chat request, OpenAI's error format and the model list |
 | `middleware/app/routes/` | `/v1/chat/completions`, `/v1/models`, `/health`, `/ready` |
 
 ## Quickstart
