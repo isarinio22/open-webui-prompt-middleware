@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openwebui}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openwebui}
+      POSTGRES_DB: ${POSTGRES_DB:-openwebui}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  middleware:
+    build:
+      context: .
+      dockerfile: middleware/Dockerfile
+    env_file: .env
+    # Published on localhost only, for curl checks. Open WebUI reaches the
+    # middleware over the compose network and does not need this.
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      # The image has no curl; urlopen raises on any non-2xx, which makes the
+      # python process exit non-zero and marks the container unhealthy.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.6.5
+    depends_on:
+      db:
+        condition: service_healthy
+      middleware:
+        condition: service_healthy
+    ports:
+      - "3000:8080"
+    environment:
+      OPENAI_API_BASE_URL: http://middleware:8000/v1
+      OPENAI_API_KEY: ${MIDDLEWARE_API_KEY:-unused}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-openwebui}:${POSTGRES_PASSWORD:-openwebui}@db:5432/${POSTGRES_DB:-openwebui}
+      ENABLE_OLLAMA_API: "false"
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:-change-me}
+    volumes:
+      - open-webui-data:/app/backend/data
+
+volumes:
+  db-data:
+  open-webui-data:

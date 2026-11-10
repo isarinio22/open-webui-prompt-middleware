@@ -1,0 +1,5 @@
+*
+!middleware/pyproject.toml
+!middleware/app
+!SYSTEM_PROMPT.md
+**/__pycache__

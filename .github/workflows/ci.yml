@@ -1,0 +1,23 @@
+name: ci
+
+on: push
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The oldest version pyproject.toml allows, and the version the image runs.
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: middleware
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e '.[dev]'
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest
